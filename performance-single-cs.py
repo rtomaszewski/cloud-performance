@@ -1,4 +1,4 @@
-#! /usr/bin/python
+#!/usr/bin/python
 
 import getopt
 import sys
@@ -11,8 +11,9 @@ import time
 import datetime
 
 from cloudservers import CloudServers
+from cloudservers import exceptions
 
-DEBUG = 1
+DEBUG = 0
 PROGRAM_NAME="performance-single-cs.py"
 
 def log(message):
@@ -29,60 +30,80 @@ class TestRackspaceCloudServerPerformance:
     
     def __init__ (self, user, key):
         (self.user, self.key) = (user, key)
-        
-    def check_cs_status(self, _server):
+
+
+    # timeout in minutes
+    def check_cs_status(self, _server, _timeout, _date_start):
         sm=self.cs.servers
        
         is_build=False
         is_timeout = False
         
-        date_start=datetime.datetime.now()
+        date_start=_date_start
         date_end=None
         
-        timeout=60*10
+        timeout=_timeout*60
+        time.sleep(30)
         
         while not is_build and not is_timeout : 
-            server=sm.find( name=_server.name )
-            date_end=datetime.datetime.now()
-            
-            debug( "checking status " + str(date_end) + "\n" + pformat(vars(server)))
+            try:
+                server=sm.find( name=_server.name )
+                debug( "checking status " + str(date_end) + "\n" + pformat(vars(_server)))
 
-            delta=date_end - date_start
-            
-            if server.status== 'ACTIVE' :
-                is_build = True
-                break
-            
-            else: 
-                if  delta.total_seconds() > timeout :
-                    is_timeout = True
+                date_end=datetime.datetime.now()
+                delta=date_end - date_start
+
+                if server.status== 'ACTIVE' :
+                    is_build = True
                     break
                 
+                else: 
+                    if  delta.total_seconds() > timeout :
+                        is_timeout = True
+                        break
+                
+            except exceptions.NotFound:
+                debug("can't find server id " + _server.name + " / " + str(_server.id) + " continue checking" )
+                
+                if  delta.total_seconds() > timeout :
+                    is_timeout = True
+                    debug("timeout ERROR, can't find server id " + _server.name + " / " + str(_server.id) )
+            
             time.sleep(60)
         
         return { 'date_start': date_start,
                  'date_end' : date_end,
                  'delta' : delta , 
                  'is_build' : is_build,
-                 'timeout' : timeout
+                 'timeout' : delta.total_seconds()
                 }
         
-    def log_status(self, status, server):
-        s="cloud server build [" + server.name + '] ' 
+    def check_all_cs_status(self, _servers, _timeout, _date_start):
+        #all_status=[(server1, status1), (server1, status1) ]
+        TODO; 
+        
+        return all_status
+    
+    def log_status(self, status, server, count):
+        s="[%2d] cloud server build [" % count + server.name + '] '
+         
         if status['is_build']:
-            s=s+"created in " + str(status['delta'].total_seconds()) + ' seconds'
+            s=s+"created in " + str(status['delta'].total_seconds()) + ' seconds / ' + \
+              str(status['timeout']/60.0) + ' minutes'
         
         else:
-            s=s+"timeout after " + str(status['timeout']) + ' seconds'
+            s=s+"ERROR, can't find server or timeout after " + \
+              str(status['timeout']) + ' seconds / ' + \
+              str(status['timeout']/60.0) + ' minutes'
             
         log(s)
         
-    def cs_create(self):
+    def cs_create(self, count):
         name='csperform' + str(int(time.time()))
         image=112
         flavor=1
         
-        log("creating image: " + pformat( {'name': name, 'image' : image, 'flavor' : flavor } ) )
+        log("[%2d] creating image: " % count + pformat( {'name': name, 'image' : image, 'flavor' : flavor } ) )
         
         sm=self.cs.servers
         server=sm.create(name, image, flavor)
@@ -95,19 +116,47 @@ class TestRackspaceCloudServerPerformance:
         sm=self.cs.servers
         server=sm.delete(server)
         
-    def test_perf_single_cs(self, nr):
+    def test_perf_single_cs(self, sample=1):
         if not self.cs : 
             self.cs=CloudServers(self.user, self.key)
             self.cs.authenticate()
-           
-        server=self.cs_create()
-        time.sleep(60)
-        status=self.check_cs_status(server)
         
-        self.log_status(status, server)
+        i=0;
+        while i<sample:
+            date_start=datetime.datetime.now()
+            server=self.cs_create(i)
+            
+            timeout=10
+            status=self.check_cs_status(server, timeout, date_start)
         
-        self.cs_delete(server)
+            self.log_status(status, server, i)
+            self.cs_delete(server)
+            
+            i+=1
+            
+    def test_multi_cs_perf(self, cs_count=1, sample=1):
+        if not self.cs : 
+            self.cs=CloudServers(self.user, self.key)
+            self.cs.authenticate()
         
+        i=0;
+        while i<sample:
+            servers=[]
+            date_start=datetime.datetime.now()
+            
+            k=0
+            while k < cs_count : 
+                server=self.cs_create(i)
+                servers.append(server)
+            
+            timeout=10
+            all_status=self.check_all_cs_status(servers, timeout, date_start)
+        
+            for server, status in all_status :
+                self.log_status(status, server, i)
+                self.cs_delete(server)
+            
+            i+=1
     
 
 class Main:
@@ -117,21 +166,26 @@ class Main:
             print message
         
         print """
-    usage: %s [-v] [-h] -u user -k key run | help
+    usage: %s [-v] [-h] [ -s # ] -u user -k key run | help
       -h - usage help 
       -v - verbose/debug output
-      -c - specify the file name with the json specification what cloud server should be created
       -u 
-      -k 
+      -k
+      -s - a number describing the test sample size; number of tests to execute  
       
       args:
         help - displays info about this program
-        run - run this program 
-""" % PROGRAM_NAME       
+        run - run this program
+        
+      example:
+        1. Run 10 times the test and report the API performance results    
+          $ %s -u user -k key -s 10
+        
+""" % (PROGRAM_NAME, PROGRAM_NAME)
     
-    def test_performance(self, user, key):
+    def test_performance(self, user, key, sample):
         t=TestRackspaceCloudServerPerformance(user,key)
-        t.test_perf_single_cs(1)
+        t.test_perf_single_cs(sample)
     
     def run(self): 
         debug("main start")
@@ -143,9 +197,11 @@ class Main:
         debug("arguments: " + ", ".join(args ))
         
         user, key = None, None
+        sample=1
         
         for o, val in optlist:
             if o == "-v":
+                global DEBUG 
                 DEBUG = 1
             elif o == "-h":
                 self.usage()
@@ -154,6 +210,8 @@ class Main:
                 user=val
             elif o =="-k":
                 key=val
+            elif o =="-s":
+                sample=int(val)
             else:
                 assert False, "unhandled option"
                 
@@ -169,7 +227,7 @@ class Main:
             self.usage("missing argument")
             sys.exit()
         elif args[0] == "run" and user is not None and key is not None:
-            self.test_performance(user,key)
+            self.test_performance(user,key, sample)
 
 if __name__ == '__main__': 
     Main().run()
