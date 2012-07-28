@@ -48,7 +48,7 @@ class TestRackspaceCloudServerPerformance:
         while not is_build and not is_timeout : 
             try:
                 server=sm.find( name=_server.name )
-                debug( "checking status " + str(date_end) + "\n" + pformat(vars(_server)))
+                debug( "checking status " + _server.name + " " + str(date_end) + "\n" + pformat(vars(_server)))
 
                 date_end=datetime.datetime.now()
                 delta=date_end - date_start
@@ -83,7 +83,7 @@ class TestRackspaceCloudServerPerformance:
                  'timeout' : delta.total_seconds()
                 }
 
-    def check_cs_status2(self, cs_record, sample):
+    def check_cs_status2(self, cs_record, sample, cs_count):
         sm=self.cs.servers
                
         _server=cs_record['cs']
@@ -97,12 +97,12 @@ class TestRackspaceCloudServerPerformance:
  
         try:
                 server=sm.find( name=_server.name )
-                debug( "checking status " + str(datetime.datetime.now()) + "\n" + pformat(vars(_server)))
+                debug( "checking status " + _server.name + " " + str(datetime.datetime.now()) + "\n" + pformat(vars(_server)))
 
                 if server.status== 'ACTIVE' :
                     is_build=True
                     _status['is_build']=is_build
-                    self.log_status(_status, server, sample)
+                    self.log_status(_status, server, sample, cs_count)
                 
         except exceptions.NotFound:
                 debug("can't find server id " + _server.name + " / " + str(_server.id) + " continue checking" )
@@ -121,7 +121,7 @@ class TestRackspaceCloudServerPerformance:
         while not is_build and not is_timeout :
             build_finished=0
             for cs_nr in range(0, len(cs_records)):
-                if self.check_cs_status2(cs_records[cs_nr], sample):
+                if self.check_cs_status2(cs_records[cs_nr], sample, cs_nr):
                     build_finished+=1
             
             if build_finished == len(cs_records):
@@ -131,17 +131,23 @@ class TestRackspaceCloudServerPerformance:
             now=datetime.datetime.now()
             if now > max_time:
                 is_timeout=True
+                
+                for cs_nr in range(0, len(cs_records)):
+                    _status=cs_records[cs_nr]['status']
+                    if not _status['is_build']: 
+                        self.log_status(_status, server, sample, cs_nr)
+                
                 break
             
             time.sleep(60)
         
         return is_build
     
-    def log_status(self, status, server, count):
-        s="[%2d] cloud server build [" % count + server.name + '] '
+    def log_status(self, status, server, sample, cs_count):
+        s="[%2d][%2d] cloud server build [" % (sample+1, cs_count+1 )+ server.name + '] '
         
-        status['delta'] = status['date_end'] - status['date_end']
-        status['timeout'] = status['delta'].total_seconds() / 60.0
+        status['delta'] = status['date_end'] - status['date_start']
+        status['timeout'] = status['delta'].total_seconds()
         
         if status['is_build']:
             s=s+"created in " + str(status['delta'].total_seconds()) + ' seconds / ' + \
@@ -154,16 +160,19 @@ class TestRackspaceCloudServerPerformance:
             
         log(s)
 
-    def cs_delete_all(cs_records, sample):
-        for cs in cs_records:
-            self.cs_delete(server)         
+    def cs_delete_all(self, cs_records):
+        debug("func cs_delete_all start")
         
-    def cs_create(self, count):
+        for rec in cs_records:
+            #cs=cs_records[cs_nr]['cs']
+            self.cs_delete( rec['cs'] )         
+        
+    def cs_create(self, count, sample_nr):
         name='csperform' + str(int(time.time()))
         image=112
         flavor=1
         
-        log("[%2d] creating image: " % count + pformat( {'name': name, 'image' : image, 'flavor' : flavor } ) )
+        log("[%2d][%2d] creating image: " % (sample_nr, count) + pformat( {'name': name, 'image' : image, 'flavor' : flavor } ) )
         
         sm=self.cs.servers
         server=sm.create(name, image, flavor)
@@ -207,13 +216,13 @@ class TestRackspaceCloudServerPerformance:
 #        }
 #        cs_records = [ cs_record ]
 
-        log("test [%2d] creating %d cloud server, please wait ..." % (sample_nr, cs_count) )
+        log("[%2d][  ] starting test nr %d, creating %d cloud server, please wait ..." % (sample_nr, sample_nr, cs_count) )
         
         cs_records = []
         
         for k in range(1, cs_count+1):
                 date_start=datetime.datetime.now()
-                server=self.cs_create(k)
+                server=self.cs_create(k, sample_nr)
 
                 status={
                     'date_start': date_start,
@@ -240,6 +249,8 @@ class TestRackspaceCloudServerPerformance:
         for i in range(0, sample): 
             cs_records=self.cs_create_all(cs_count, i+1)
             
+            debug("servers created " +  str(type(cs_records)) + " : \n" + pformat(cs_records))
+            
             last_data_start=cs_records[cs_count-1]['status']['date_start']
             now=datetime.datetime.now()
             
@@ -248,8 +259,10 @@ class TestRackspaceCloudServerPerformance:
             
             time.sleep(30)
             self.check_all_cs_status(cs_records, max_time, i)
+            debug("servers checked; " +  str(type(cs_records)) + " : \n" + pformat(cs_records))
             
             self.cs_delete_all(cs_records)
+            debug("servers deleted; " +  str(type(cs_records)) + " : \n" + pformat(cs_records))
 
 class Main:
     
