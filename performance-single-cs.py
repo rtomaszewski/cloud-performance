@@ -33,55 +33,6 @@ class TestRackspaceCloudServerPerformance:
 
 
     # timeout in minutes
-    def check_cs_status(self, _server, _timeout, _date_start):
-        sm=self.cs.servers
-       
-        is_build=False
-        is_timeout = False
-        
-        date_start=_date_start
-        date_end=None
-        
-        timeout=_timeout*60
-        time.sleep(30)
-        
-        while not is_build and not is_timeout : 
-            try:
-                server=sm.find( name=_server.name )
-                debug( "checking status " + _server.name + " " + str(date_end) + "\n" + pformat(vars(_server)))
-
-                date_end=datetime.datetime.now()
-                delta=date_end - date_start
-
-                if server.status== 'ACTIVE' :
-                    is_build = True
-                    break
-                
-                else: 
-                    if  delta.total_seconds() > timeout :
-                        is_timeout = True
-                        break
-                
-            except exceptions.NotFound:
-                debug("can't find server id " + _server.name + " / " + str(_server.id) + " continue checking" )
-                
-                # if the code fails for the first request
-                date_end=datetime.datetime.now()
-                delta=date_end - date_start
-                
-                if  delta.total_seconds() > timeout :
-                    is_timeout = True
-                    debug("timeout ERROR, can't find server id " + _server.name + " / " + str(_server.id) )
-                    break
-            
-            time.sleep(60)
-        
-        return { 'date_start': date_start,
-                 'date_end' : date_end,
-                 'delta' : delta , 
-                 'is_build' : is_build,
-                 'timeout' : delta.total_seconds()
-                }
 
     def check_cs_status2(self, cs_record, sample, cs_count):
         sm=self.cs.servers
@@ -96,19 +47,20 @@ class TestRackspaceCloudServerPerformance:
         is_build=False
  
         try:
-                server=sm.find( name=_server.name )
-                debug( "checking status " + _server.name + " " + str(datetime.datetime.now()) + "\n" + pformat(vars(_server)))
+            checking_now= datetime.datetime.now()
+            server=sm.find( name=_server.name )
+            debug( "checking status " + _server.name + " " +  str(checking_now) + "\n" + pformat(vars(_server)))
 
-                if server.status== 'ACTIVE' :
-                    is_build=True
-                    _status['is_build']=is_build
-                    self.log_status(_status, server, sample, cs_count)
-                
         except exceptions.NotFound:
                 debug("can't find server id " + _server.name + " / " + str(_server.id) + " continue checking" )
+                return is_build
 
-        _status['date_end']=datetime.datetime.now()
-        
+        if server.status== 'ACTIVE' :
+            is_build=True
+            _status['is_build']=is_build
+            _status['date_end']=checking_now
+            self.log_status(_status, server, sample, cs_count)
+
         return is_build
         
         
@@ -134,6 +86,7 @@ class TestRackspaceCloudServerPerformance:
                 
                 for cs_nr in range(0, len(cs_records)):
                     _status=cs_records[cs_nr]['status']
+                    _status['date_end']=now
                     if not _status['is_build']: 
                         self.log_status(_status, server, sample, cs_nr)
                 
@@ -160,6 +113,10 @@ class TestRackspaceCloudServerPerformance:
             
         log(s)
 
+    def cs_delete(self, server):
+        sm=self.cs.servers
+        server=sm.delete(server)
+
     def cs_delete_all(self, cs_records):
         debug("func cs_delete_all start")
         
@@ -172,73 +129,74 @@ class TestRackspaceCloudServerPerformance:
         image=112
         flavor=1
         
-        log("[%2d][%2d] creating image: " % (sample_nr, count) + pformat( {'name': name, 'image' : image, 'flavor' : flavor } ) )
-        
         sm=self.cs.servers
         server=sm.create(name, image, flavor)
         
+        log("[%2d][%2d] created image: " % (sample_nr, count) + pformat( {'name': name, 'image' : image, 'flavor' : flavor } ) )
         debug(pformat(vars(server)))
         
         return server
+
+    """
+        status = { 
+                         'date_start': date_start,
+                         'date_end' : date_end,
+                         'is_build' : is_build,
+        }
+        cs_record={ 
+                'cs' : server,
+                'status' : status, ,
+        }
         
-    def cs_delete(self, server):
-        sm=self.cs.servers
-        server=sm.delete(server)
-        
-    def test_perf_single_cs(self, sample=1):
-        if not self.cs : 
-            self.cs=CloudServers(self.user, self.key)
-            self.cs.authenticate()
-        
-        i=0;
-        while i<sample:
-            date_start=datetime.datetime.now()
-            server=self.cs_create(i)
-            
-            timeout=10
-            status=self.check_cs_status(server, timeout, date_start)
-        
-            self.log_status(status, server, i)
-            self.cs_delete(server)
-            
-            i+=1
-    
+        cs_records = [ cs_record ]
+    """    
     def cs_create_all(self, cs_count, sample_nr):
-# status = { 
-#                 'date_start': date_start,
-#                 'date_end' : date_end,
-#                 'is_build' : is_build,
-#}
-
-#        cs_record={ 
-#                'cs' : server,
-#                'status' : status, ,
-#        }
-#        cs_records = [ cs_record ]
-
         log("[%2d][  ] starting test nr %d, creating %d cloud server, please wait ..." % (sample_nr, sample_nr, cs_count) )
         
-        cs_records = []
+        api_time_limit=60
+        hard_limit=10
         
-        for k in range(1, cs_count+1):
-                date_start=datetime.datetime.now()
-                server=self.cs_create(k, sample_nr)
+        
+        cs_records = []
 
-                status={
-                    'date_start': date_start,
-                    'date_end' : None,
-                    'is_build' : False,
-                }
+        build_nr=1
+        delayed_10s=False
+        
+        while build_nr <= cs_count :
+            if 0==build_nr % 11 and not delayed_10s:
+                debug("created %d servers, introducing delay" % build_nr)
+                time.sleep(60+10)
                 
-                cs_record= {
-                    'cs' : server,
-                    'status' : status,
-                }
+            try:
+                date_start = datetime.datetime.now() 
+                server = self.cs_create(build_nr, sample_nr)
+                delayed_10s=False
                 
-                cs_records.append(cs_record)
+            except exceptions.OverLimit:
+                hit_time= datetime.datetime.now()
+                debug("warning, hit the API limit at " + str(hit_time) + ", imposing delay")
+                time.sleep(10)
+                delayed_10s=True
+                
+                continue 
+    
+            status     = {
+                'date_start': date_start,
+                'date_end' : None,
+                'is_build' : False,
+            }
+            
+            cs_record  = {
+                'cs' : server,
+                'status' : status,
+            }
+        
+            cs_records.append(cs_record)
+            
+            build_nr+=1
         
         return cs_records
-                     
+                    
     def test_multi_cs_perf(self, sample=1, cs_count=1, timeout=10):
         debug('func test_multi_cs_perf start')
         
