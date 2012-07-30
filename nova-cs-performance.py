@@ -12,7 +12,7 @@ import datetime
 
 
 DEBUG = 0
-PROGRAM_NAME="performance-single-cs.py"
+PROGRAM_NAME="nova-cs-performance.py"
 
 def log(message):
     t=time.strftime("%H:%M:%S", time.gmtime())
