@@ -9,6 +9,9 @@ import json
 import re
 import time
 import datetime
+import threading
+import Queue 
+import thread
 
 from cloudservers import CloudServers
 from cloudservers import exceptions
@@ -16,16 +19,57 @@ from cloudservers import exceptions
 DEBUG = 0
 PROGRAM_NAME="performance-single-cs.py"
 
+L_LOCK = thread.allocate_lock()
+
 def log(message):
+    L_LOCK.acquire()
     print message 
+    L_LOCK.release()
 
 def debug(message):
     if DEBUG>0:
         log("debug[%2d]: " % DEBUG + message)
 
 
+class CServers:
+    cs_count=0
+    cs_records_queue=None
+    cs_records=[]
+    max_time=None
+    timeout=None
+    
+    def __init__(self, timeout):
+        self.cs_records_queue=Queue.Queue()
+        self.timeout=timeout
+
+    def add_server(self, s):
+        self.cs_records_queue.put(s)
+        self.cs_records.append(s)
+        self.cs_count+=1
+        self.set_max_time()
+        
+    def get_server(self):
+        self.cs_records_queue.get(s)
+    
+    def get_max_time(self):
+        return self.max_time
+    
+    def set_max_time(self):
+        
+        last_data_start= self.cs_records[self.cs_count-1]['status']['date_start']
+        now=datetime.datetime.now()
+        
+        delta=datetime.timedelta(minutes=self.timeout)
+        self.max_time=now + delta
+        
+        return self.max_time
+
+    def get_count(self):
+        return self.cs_count
+
 class TestRackspaceCloudServerPerformance:
-    (user, key) = (None, None)
+    user, key = None, None
+    mycservers=None
     cs=None
     
     def __init__ (self, user, key):
@@ -62,7 +106,6 @@ class TestRackspaceCloudServerPerformance:
             self.log_status(_status, server, sample, cs_count)
 
         return is_build
-        
         
     def check_all_cs_status(self, cs_records, max_time, sample):
         debug('func check_all_cs_status start')
@@ -120,8 +163,7 @@ class TestRackspaceCloudServerPerformance:
     def cs_delete_all(self, cs_records):
         debug("func cs_delete_all start")
         
-        for rec in cs_records:
-            #cs=cs_records[cs_nr]['cs']
+        for rec in self.mycservers.cs_records:
             self.cs_delete( rec['cs'] )         
         
     def cs_create(self, count, sample_nr):
@@ -150,15 +192,14 @@ class TestRackspaceCloudServerPerformance:
         
         cs_records = [ cs_record ]
     """    
-    def cs_create_all(self, cs_count, sample_nr):
+    def cs_create_all(self, cs_count, sample_nr, timeout):
+        self.mycservers=CServers(timeout)
+        
         log("[%2d][  ] starting test nr %d, creating %d cloud server, please wait ..." % (sample_nr, sample_nr, cs_count) )
         
         api_time_limit=60
         hard_limit=10
         
-        
-        cs_records = []
-
         build_nr=1
         delayed_10s=False
         
@@ -191,12 +232,25 @@ class TestRackspaceCloudServerPerformance:
                 'status' : status,
             }
         
-            cs_records.append(cs_record)
+            #cs_records.append(cs_record)
+            self.mycservers.add_server(cs_record)
             
             build_nr+=1
         
-        return cs_records
-                    
+        return self.mycservers
+    
+    def start_test(self, test_nr, cs_count, timeout):
+        self.cs_create_all(cs_count, test_nr, timeout)
+        debug("%d cloud servers created " % self.mycservers.get_count())
+    
+    def evaluate_test(self):
+        self.check_all_cs_status(cs_records, max_time, i)
+        debug("%d cloud servers checked " % self.mycservers.get_count())
+    
+    def finish_test(self):
+        self.cs_delete_all(cs_records)
+        debug("%d cloud servers deleted" % self.mycservers.get_count())
+                
     def test_multi_cs_perf(self, sample=1, cs_count=1, timeout=10):
         debug('func test_multi_cs_perf start')
         
@@ -204,23 +258,13 @@ class TestRackspaceCloudServerPerformance:
             self.cs=CloudServers(self.user, self.key)
             self.cs.authenticate()
 
-        for i in range(0, sample): 
-            cs_records=self.cs_create_all(cs_count, i+1)
-            
-            debug("servers created " +  str(type(cs_records)) + " : \n" + pformat(cs_records))
-            
-            last_data_start=cs_records[cs_count-1]['status']['date_start']
-            now=datetime.datetime.now()
-            
-            delta=datetime.timedelta(minutes=timeout)
-            max_time=now + delta
+        for i in range(0, sample):
+            self.start_test(i+1, cs_count, timeout)
             
             time.sleep(30)
-            self.check_all_cs_status(cs_records, max_time, i)
-            debug("servers checked; " +  str(type(cs_records)) + " : \n" + pformat(cs_records))
+            self.evaluate_test()
             
-            self.cs_delete_all(cs_records)
-            debug("servers deleted; " +  str(type(cs_records)) + " : \n" + pformat(cs_records))
+            self.finish_test()
 
 class Main:
     
