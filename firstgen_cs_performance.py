@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 import getopt
 import sys
@@ -71,14 +71,17 @@ class TestRackspaceCloudServerPerformance:
     user, key = None, None
     mycservers=None
     cs=None
-    
-    def __init__ (self, user, key):
-        (self.user, self.key) = (user, key)
 
+   
+    def __init__ (self, user, key, sample=1, cs_count=1, timeout=10 ):
+        (self.user, self.key) = (user, key)
+        self.sample=sample
+        self.cs_count= cs_count
+        self.timeout=timeout
 
     # timeout in minutes
 
-    def check_cs_status2(self, cs_record, sample, cs_count):
+    def check_cs_status2(self, cs_record): 
         sm=self.cs.servers
                
         _server=cs_record['cs']
@@ -107,15 +110,17 @@ class TestRackspaceCloudServerPerformance:
 
         return is_build
         
-    def check_all_cs_status(self, cs_records, max_time, sample):
+    #9def check_all_cs_status(self, cs_records, max_time, sample):
+    
+    def check_all_cs_status(self, sample_nr): 
         debug('func check_all_cs_status start')
-        
+         
         is_build=False
         is_timeout=False
         
         while not is_build and not is_timeout :
             build_finished=0
-            for cs_nr in range(0, len(cs_records)):
+            for cs_nr in range(0, self.mycservers.get_count()):
                 if self.check_cs_status2(cs_records[cs_nr], sample, cs_nr):
                     build_finished+=1
             
@@ -192,10 +197,10 @@ class TestRackspaceCloudServerPerformance:
         
         cs_records = [ cs_record ]
     """    
-    def cs_create_all(self, cs_count, sample_nr, timeout):
-        self.mycservers=CServers(timeout)
+    def cs_create_all(self, sample_nr):
+        self.mycservers=CServers(self.timeout)
         
-        log("[%2d][  ] starting test nr %d, creating %d cloud server, please wait ..." % (sample_nr, sample_nr, cs_count) )
+        log("[%2d][  ] starting test nr %d, creating %d cloud server, please wait ..." % (sample_nr, sample_nr, self.cs_count) )
         
         api_time_limit=60
         hard_limit=10
@@ -203,7 +208,7 @@ class TestRackspaceCloudServerPerformance:
         build_nr=1
         delayed_10s=False
         
-        while build_nr <= cs_count :
+        while build_nr <= self.cs_count :
             if 0==build_nr % 11 and not delayed_10s:
                 debug("created %d servers, introducing delay" % build_nr)
                 time.sleep(60+10)
@@ -239,30 +244,30 @@ class TestRackspaceCloudServerPerformance:
         
         return self.mycservers
     
-    def start_test(self, test_nr, cs_count, timeout):
-        self.cs_create_all(cs_count, test_nr, timeout)
+    def start_test(self, test_nr):
+        self.cs_create_all(test_nr)
         debug("%d cloud servers created " % self.mycservers.get_count())
     
-    def evaluate_test(self):
-        self.check_all_cs_status(cs_records, max_time, i)
+    def evaluate_test(self, test_nr):
+        self.check_all_cs_status(test_nr)
         debug("%d cloud servers checked " % self.mycservers.get_count())
     
     def finish_test(self):
         self.cs_delete_all(cs_records)
         debug("%d cloud servers deleted" % self.mycservers.get_count())
                 
-    def test_multi_cs_perf(self, sample=1, cs_count=1, timeout=10):
+    def test_multi_cs_perf(self):
         debug('func test_multi_cs_perf start')
         
         if not self.cs : 
             self.cs=CloudServers(self.user, self.key)
             self.cs.authenticate()
 
-        for i in range(0, sample):
-            self.start_test(i+1, cs_count, timeout)
+        for i in range(0, self.sample):
+            self.start_test(i+1)
             
             time.sleep(30)
-            self.evaluate_test()
+            self.evaluate_test(i+1)
             
             self.finish_test()
 
@@ -295,9 +300,10 @@ class Main:
     def test_performance(self, user,key, sample, cs_count, timeout):
         debug('func test_performance start')
         
-        t=TestRackspaceCloudServerPerformance(user,key)
+        #t=TestRackspaceCloudServerPerformance(user,key,
+        t=TestRackspaceCloudServerPerformance(user, key, sample, cs_count, timeout )
         #t.test_perf_single_cs(sample)
-        t.test_multi_cs_perf(sample, cs_count, timeout)
+        t.test_multi_cs_perf()
     
     def run(self): 
         debug("main start")
@@ -350,3 +356,20 @@ class Main:
 if __name__ == '__main__': 
     Main().run()
         
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
