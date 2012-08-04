@@ -11,6 +11,8 @@ import time
 import datetime
 
 
+
+
 DEBUG = 0
 PROGRAM_NAME="nova-cs-performance.py"
 
