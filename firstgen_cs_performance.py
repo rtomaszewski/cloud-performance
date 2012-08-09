@@ -30,6 +30,8 @@ def debug(message):
     if DEBUG>0:
         log("debug[%2d]: " % DEBUG + message)
 
+class RackConnect:
+    pass
 
 
 """
@@ -47,15 +49,6 @@ def debug(message):
     cs_records=[]
 """
 class CServers:
-    sample_cs_count=None
-    current_cs_count=None
-    
-    cs_records=[]
-    max_time=None
-    timeout=None
-    
-    l_build=thread.allocate_lock()
-    
     def __init__(self, timeout, cs_count):
         self.timeout=timeout
         self.sample_cs_count=cs_count
@@ -65,6 +58,10 @@ class CServers:
         now=datetime.datetime.now()
         delta=datetime.timedelta(minutes=self.timeout)
         self.max_time=now + delta
+        
+        self.cs_records=[]
+        
+        self.l_build=thread.allocate_lock()        
     
     def add_server(self, s):
         self.l_build.acquire()
@@ -91,6 +88,17 @@ class CServers:
     
     def is_build_complete(self):
         if self.is_create_complete():
+            for rec in self.cs_records:
+                if not rec['rackconenct']['is_build'] :
+                    return False 
+                
+        else:
+            return False
+        
+        return True
+    
+    def is_rc_build_complete(self):
+        if self.is_build_complete():
             for rec in self.cs_records:
                 if not rec['status']['is_build'] :
                     return False 
@@ -120,6 +128,14 @@ class CServers:
             if not s['status']['is_build'] :
                 yield (i , s)
             i+=1
+
+    def get_all_failed_rc_servers(self):
+        i=0
+        while i < len(self.cs_records) :
+            s=self.cs_records[i]
+            if not s['status']['is_build'] :
+                yield (i , s)
+            i+=1
     
     def get_servers_to_check(self):
         if -1 == self._aux_index: 
@@ -137,6 +153,14 @@ class CServers:
             i+=1
         
         self._aux_index=-1
+    
+    def get_all_built_servers(self):
+       i=0
+       while i < len(self.cs_records) :
+            s=self.cs_records[i]
+            if s['status']['is_build'] :
+                yield (i , s)
+            i+=1
     
     def get_max_time(self):
         return self.max_time
@@ -172,21 +196,44 @@ class FirstGenCloud:
             self.l_cloud.release()
         
         except Exception:
+            debug("ERROR, creation problem")
             self.l_cloud.release()
             raise
         
         return ret
     
-    def find(self, *args , **kwargs):
+    def find(self, *args, **kwargs):
         try:
             self.l_cloud.acquire()
             ret=self.sm.find(*args, **kwargs)
             self.l_cloud.release()
         
-        except Exception:
-             self.l_cloud.release()
-             raise
-             
+        except Exception as inst:
+            debug("ERROR, finding problem")
+#            print type(inst)     # the exception instance
+#            print inst.args      # arguments stored in .args
+#            print inst           # __str__ allows args to printed directly
+
+            self.l_cloud.release()
+            raise
+            
+        return ret
+    
+    def get(self, *args, **kwargs):
+        try:
+            self.l_cloud.acquire()
+            ret=self.sm.get(*args, **kwargs)
+            self.l_cloud.release()
+        
+        except Exception as inst:
+            debug("ERROR, get problem")
+#            print type(inst)     # the exception instance
+#            print inst.args      # arguments stored in .args
+#            print inst           # __str__ allows args to printed directly
+
+            self.l_cloud.release()
+            raise
+            
         return ret
 
     def delete(self, *args , **kwargs):
@@ -197,12 +244,12 @@ class FirstGenCloud:
         
         except Exception:
             self.l_cloud.release()
+            debug("ERROR, delete return exception")
             raise
                     
         return ret
 
 class TestRackspaceCloudServerPerformance:
-    mycservers=None
     
     def __init__ (self, cloud_manager, sample=1, cs_count=1, timeout=10 ):
         self.cloud_manager = cloud_manager
@@ -211,7 +258,7 @@ class TestRackspaceCloudServerPerformance:
         self.timeout=timeout
         
         l_is_check_done=thread.allocate_lock()
-        
+        self.mycservers=None
 
     def check_cs_status(self, cs_record, cs_index): 
         _server=cs_record['cs']
@@ -222,8 +269,9 @@ class TestRackspaceCloudServerPerformance:
  
         try:
             checking_now= datetime.datetime.now()
-            server=self.cloud_manager.find( name=_server.name )
-            debug( "checking status of cs index " + str(cs_index) + "->" + _server.name + " " +  str(checking_now) + "\n" + pformat(vars(_server)))
+            #server=self.cloud_manager.find( name=_server.name )
+            server=self.cloud_manager.get( _server.id )
+            debug( "checking status of cs index " + str(cs_index) + "->" + server.name + " " +  str(checking_now) + "\n" + pformat(vars(server)))
 
         except exceptions.NotFound:
                 debug("can't find server name " + _server.name + " / id " + str(_server.id) + " / time " + str(checking_now)  + " continue checking" )
@@ -248,7 +296,7 @@ class TestRackspaceCloudServerPerformance:
             for s in self.mycservers.get_servers_to_check():
                 if self.check_cs_status(s, self.mycservers.get_server_to_check_index()):
                     self.log_status2(s, sample_nr, self.mycservers.get_server_to_check_index())
-                    self.cs_delete(s['cs'])
+#                    self.cs_delete(s['cs'])
             
             if self.mycservers.is_build_complete():
                 is_build=True
@@ -268,6 +316,27 @@ class TestRackspaceCloudServerPerformance:
             time.sleep(60)
         
         return is_build
+    
+    def log_status3(self, cs_record, sample, cs_count):
+        server=cs_record['cs']
+        status=cs_record['status']
+        rc_status=cs_record['rackconnect']
+        
+        s="[%2d][%2d] rackconnect build [" % (sample, cs_count+1 )+ server.name + '] '
+
+        rc_status['delta'] = rc_status['date_end'] - status['date_end']
+        rc_status['timeout'] = rc_status['delta'].total_seconds()
+        
+        if rc_status['is_build']:
+            s=s+"finished in " + str(rc_status['delta'].total_seconds()) + ' seconds / ' + \
+              str(rc_status['timeout']/60.0) + ' minutes'
+        
+        else:
+            s=s+"ERROR, couldn't find server or timeout after " + \
+              str(rc_status['timeout']) + ' seconds / ' + \
+              str(rc_status['timeout']/60.0) + ' minutes'
+            
+        log(s)
     
     def log_status2(self, cs_record, sample_nr, cs_count):
         _server=cs_record['cs']
@@ -300,7 +369,10 @@ class TestRackspaceCloudServerPerformance:
         debug("func cs_delete_all start")
         
         for i, s in self.mycservers.get_all_servers():
-            self.cs_delete( s )         
+            try:
+                self.cs_delete( s )         
+            except Exception as e:
+                debug("error when deleting server %s, continue" % s.name)
         
     def cs_create(self, count, sample_nr):
         name='csperform' + str(int(time.time()))
@@ -362,9 +434,16 @@ class TestRackspaceCloudServerPerformance:
                 'is_build' : False,
             }
             
+            rc_status = {
+#                'date_start': date_start,
+                'date_end' : None,
+                'is_build' : False,
+            }
+            
             cs_record  = {
                 'cs' : server,
                 'status' : status,
+                'rackconnect' : rc_status
             }
         
             #cs_records.append(cs_record)
@@ -384,22 +463,77 @@ class TestRackspaceCloudServerPerformance:
         
         log('thread %s started' %  threading.current_thread().getName() )
         time.sleep(30)
+#        time.sleep(5)
         self.check_all_cs_status(test_nr)
         debug("%d cloud servers checked " % self.mycservers.get_count())
     
     def finish_test(self):
         self.cs_delete_all()
         debug("%d cloud servers deleted" % self.mycservers.get_count())
+
+    def check_single_cs_rc_build(self, cs_record, cs_index):
+        return True
+    
+        _server=cs_record['cs']
+        _status=cs_record['status']
+        _date_start=_status['date_start']
+        
+        #debug( "checking rc status of cs index " + str(cs_index) + "->" + server.name + " " +  str(checking_now) + "\n" + pformat(vars(server)))
+        pass
+    
+    def evaluate_rackconnect_status(self):
+        log('thread %s started' %  threading.current_thread().getName() )
+#        time.sleep(60)
+#        time.sleep(5)
+
+        rc=RackConnect()
+        return
+
+        is_build=False
+        is_timeout=False
+        delta=datetime.timedelta(minutes=self.timeout)
+        
+        while not is_build and not is_timeout :
+            for i, s in self.mycservers.get_all_built_servers():
+                if self.check_single_cs_rc_build(s, i):
+                    self.log_status3(s, sample_nr, i)
+                    self.cs_delete(s['cs'])
+
+            if self.mycservers.is_rc_build_complete():
+                is_build=True
+                break
+
+            cs_build_max_time=self.mycservers.get_max_time()
+            rc_max_time=cs_build_max_time + delta
+            
+            now=datetime.datetime.now()
+            
+            if now > rc_max_time:
+                is_timeout=True
                 
+                for cs_nr, cs_record in self.mycservers.get_all_failed_rc_servers():
+                    rc_status=cs_record['rackconnect']
+                    rc_status['date_end']=now
+                    self.log_status3(cs_record, sample_nr, cs_nr)
+                break
+            
+            time.sleep(60)
+        
+        debug("rackconnect checked %d cloud servers" % self.mycservers.get_count())
+                    
     def test_multi_cs_perf(self):
         debug('func test_multi_cs_perf start')
+        log("[ ][ ] Preparing to start all %d tests" % (self.sample) )
         
         for i in range(0, self.sample):
-            log("[ ][ ] starting test nr %d" % (i+1) )
+            log("[ ][ ] test nr %d started at %s" % (i+1, datetime.datetime.now() ) )
             t=threading.Thread( target=self.start_test, name="start_test", args=(i+1,))
             t.start()
             
             t=threading.Thread( target=self.evaluate_test, name="eval_test", args=(i+1,))
+            t.start()
+            
+            t=threading.Thread( target=self.evaluate_rackconnect_status(), name="eval_rackconnect", args=(i+1,))
             t.start()
             
             main_thread = threading.currentThread()
@@ -410,6 +544,7 @@ class TestRackspaceCloudServerPerformance:
             
             debug("all threads finished, destroying remaining servers")
             self.finish_test()
+            log("[ ][ ] test nr %d finished at %s" % (i+1, datetime.datetime.now() ) )
             
 
 class Main:
