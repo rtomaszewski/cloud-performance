@@ -12,6 +12,8 @@ import datetime
 import threading
 import Queue 
 import thread
+import paramiko
+import traceback
 
 from cloudservers import CloudServers
 from cloudservers import exceptions
@@ -30,10 +32,213 @@ def debug(message):
     if DEBUG>0:
         log("debug[%2d]: " % DEBUG + message)
 
+class RcConnectionTestException(Exception):
+    def __init__(self, value):
+         self.value = value
+         
+    def __str__(self):
+         return repr(self.value)
+
 class RackConnect:
-    pass
+        
+    def __init__(self, password, cs_ip):
+        self.rcbastion_ip = cs_ip
+        self.rcbastion_pass = password
+        
+        self.ssh = paramiko.SSHClient()
+        self.ssh.set_missing_host_key_policy( paramiko.AutoAddPolicy() )
+        self.ssh.connect(self.rcbastion_ip, username='root', password=self.rcbastion_pass)
+        debug("established connection to bastion host %s" % self.rcbastion_ip)
+        
+        self.rc_test_script_path="/root/"
+        self.rc_test_script_name="check_rackconnect.sh"
+        self.rc_test_script= self.rc_test_script_path + self.rc_test_script_name
+        
+        self.test_servers = []
+        self.keep_alive_thread = None
+        self.is_stop_keep_alive = False
+        self.test_cmd = 'id -u'
+        
+        self.l_ssh_access=thread.allocate_lock()
+    
+    def exec_debug_logs(self, cmd, stdout, stderr  ):
+        if DEBUG :  
+            debug('exec cmd              : %s' % cmd)
+            
+            if 0 == len(stdout):
+                pass
+            if 1 == len(stdout):
+                debug('exec logs for stdout  : ' + str(stdout))
+            else: 
+                debug('exec logs for stdout : \n' + str(stdout))
+                
+            if 0 == len(stderr):
+                pass
+            elif 1 == len(stderr):
+                debug('exec logs for stderror: ' + str(stderr))
+            else:
+                debug('exec logs for stderror: \n' + str(stderr))
+    
+#    def exec_command(self, cmd, passw=None):
+#        self.l_ssh_access.acquire()
+#        
+#        out, err = self.ssh.exec_command(cmd)
+#        
+#        stdout = list(out)
+#        stderr = list(err) 
+#        
+#        self.l_ssh_access.release()
+#        
+#        self.exec_debug_logs(cmd, stdout, stderr)
+#
+#        return (stdout, stderr)
+    
+    def _scp_rc_test_script_cs(self, priv_ip, passw):
+        if DEBUG: 
+            scp_opt="-v"
+        
+        cmd='scp -q ' + scp_opt + ' -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no %s root@%s:~/; echo $? done.' % \
+             ( self.rc_test_script, priv_ip )
+        
+        debug(cmd)
+        
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy( paramiko.AutoAddPolicy() )
+        ssh.connect(self.rcbastion_ip, username='root', password=self.rcbastion_pass)
+        debug("trying scp a file from bastion %s to cloud server %s" % (self.rcbastion_ip, priv_ip ))
+        
+        chan = ssh.invoke_shell()
+        
+        # Ssh and wait for the password prompt.
+        chan.send(cmd + '\n')
+        buff = ''
+        while not buff.endswith('\'s password: '):
+            resp = chan.recv(9999)
+            buff += resp
+            debug(resp)
+            
+        # Send the password and wait for a prompt.
+        time.sleep(3)
+        debug("sending pass for scp: <%s> " % passw)
+        chan.send(passw + '\n')
+        
+        buff = ''
+        while buff.find(' done.') < 0 :
+            resp = chan.recv(9999)
+            buff += resp
+            debug(resp)
+            
+        ret=re.search('(\d) done.', i).group(1)
+        ssh.close()
+        
+        return ret==0 # successfully scp a file  
+    
+    def _run_rc_test_script_on_cs(self, priv_ip, passw):
+        if DEBUG: 
+            scp_opt="-v"
+        
+        cmd='ssh -t ' + ssh_opt + ' -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no root@%s %s ; echo $? done.' % \
+             ( priv_ip, self.rc_test_script )
+        
+        debug(cmd)
+        
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy( paramiko.AutoAddPolicy() )
+        ssh.connect(self.rcbastion_ip, username='root', password=self.rcbastion_pass)
+        debug("running rc test script from bastion %s to the cloud server %s" % (self.rcbastion_ip, priv_ip ))
+        
+        chan = ssh.invoke_shell()
+        
+        # Ssh and wait for the password prompt.
+        chan.send(cmd + '\n')
+        buff = ''
+        while not buff.endswith('\'s password: '):
+            resp = chan.recv(9999)
+            buff += resp
+            debug(resp)
+            
+        # Send the password and wait for a prompt.
+        time.sleep(3)
+        debug("sending pass for ssh: <%s> " % passw)
+        chan.send(passw + '\n')
+        
+        buff = ''
+        while buff.find(' done.') < 0 :
+            resp = chan.recv(9999)
+            buff += resp
+            debug(resp)
+            
+        ret=re.search( '(\w+)\n(\d) done.', i).group(1)
+        ssh.close()
+        
+        return ret=='yes' # successfully scp a file  
+    
+    def exec_command(self, cmd, passwd=None):
+        self.l_ssh_access.acquire()
+        
+        input, out, err = self.ssh.exec_command(cmd)
+        
+        stdout = list(out)
+        stderr = list(err) 
+        
+        self.l_ssh_access.release()
+        self.exec_debug_logs(cmd, stdout, stderr)
+        
+        return (stdout, stderr)
+        
+    def _keep_connection_alive(self):
+        delay=0
+        delta=3
+        while not self.is_stop_keep_alive:
+            if 0 == delay % 30  :
+                self._test()
 
+            delay+=delta
+            time.sleep(delta)
+    
+    def _keep_connection_alive_thread(self):
+        self.keep_alive_thread=threading.Thread( target=self._keep_connection_alive, name="bastion_keep_alive")
+        self.keep_alive_thread.start()
+        
+    def _stop_keep_alive_thread(self):
+        debug("stopping keep alive thread")
+        self.is_stop_keep_alive=True
+        self.keep_alive_thread.join()
 
+    def _test(self):
+        cmd=self.test_cmd
+        stdout, stderr = self.exec_command(cmd)
+        
+        id=int(stdout[0].strip())
+        if 0 != id:
+            log("rc test failed, id=%d" % id)
+            raise RcConnectionTestException('connection test failed')
+        
+        return True
+
+    def start(self):
+        debug("doing initial testing if connection is alive")
+        self._test()
+
+        log("[ ][ ] starting thread to keep the connection to bastion alive %s" % str(datetime.datetime.now()) )
+        self._keep_connection_alive_thread()
+        
+    def close(self):
+        self._stop_keep_alive_thread() 
+    
+    def check_server(self, server):
+        priv_ip=server.addresses['private'][0]
+        passw=server.adminPass
+        
+        if not priv_ip in self.test_servers:
+            if self._scp_rc_test_script_cs(priv_ip, passw):
+                log("ERROR, can't copy a file to cloud server %s" % priv_ip)
+            else:
+                self.test_servers.append(priv_ip)
+                return False
+
+        return self._run_rc_test_script_on_cs(priv_ip, passw)
+        
 """
     status     = {
         'date_start': date_start,
@@ -82,6 +287,7 @@ class CServers:
         self.l_build.acquire()
         if self.current_cs_count == self.sample_cs_count:
             ret=True
+            
         self.l_build.release()
         
         return ret
@@ -89,7 +295,7 @@ class CServers:
     def is_build_complete(self):
         if self.is_create_complete():
             for rec in self.cs_records:
-                if not rec['rackconenct']['is_build'] :
+                if not rec['status']['is_build'] :
                     return False 
                 
         else:
@@ -100,7 +306,7 @@ class CServers:
     def is_rc_build_complete(self):
         if self.is_build_complete():
             for rec in self.cs_records:
-                if not rec['status']['is_build'] :
+                if not rec['rackconnect']['is_build'] :
                     return False 
                 
         else:
@@ -259,6 +465,7 @@ class TestRackspaceCloudServerPerformance:
         
         l_is_check_done=thread.allocate_lock()
         self.mycservers=None
+        self.rc_manager = None
 
     def check_cs_status(self, cs_record, cs_index): 
         _server=cs_record['cs']
@@ -386,6 +593,18 @@ class TestRackspaceCloudServerPerformance:
         
         return server
 
+#    def cs_create(self, _name):
+#        name=_name + str(int(time.time()))
+#        image=112
+#        flavor=1
+#        
+#        server=self.cloud_manager.create(name, image, flavor)
+#        
+#        log("[  ][  ] created cs "  + pformat( {'name': name, 'image' : image, 'flavor' : flavor } ) )
+#        debug(pformat(vars(server)))
+#        
+#        return server
+
     """
         status = { 
                          'date_start': date_start,
@@ -405,7 +624,8 @@ class TestRackspaceCloudServerPerformance:
         log("[%2d][  ] starting test nr %d, creating %d cloud server, please wait ..." % (sample_nr, sample_nr, self.cs_count) )
         
         api_time_limit=60
-        hard_limit=10
+        exception_delay=60
+        #hard_limit=10
         
         build_nr=1
         delayed_10s=False
@@ -413,7 +633,7 @@ class TestRackspaceCloudServerPerformance:
         while build_nr <= self.cs_count :
             if 0==build_nr % 11 and not delayed_10s:
                 debug("created %d servers, introducing delay" % build_nr)
-                time.sleep(60+10)
+                time.sleep(api_time_limit+10)
                 
             try:
                 date_start = datetime.datetime.now() 
@@ -422,11 +642,28 @@ class TestRackspaceCloudServerPerformance:
                 
             except exceptions.OverLimit:
                 hit_time= datetime.datetime.now()
-                debug("warning, hit the API limit at " + str(hit_time) + ", imposing delay")
-                time.sleep(10)
+                log("ERROR, hit the API limit at " + str(hit_time) + ", imposing delay of %s" % api_time_limit)
+                #time.sleep(api_time_limit)
+                #delayed_10s=True
+                
+                return self.mycservers
+            
+            except exceptions.BadRequest:
+                hit_time= datetime.datetime.now()
+                log("warning, bad request sent or bad response at " + str(hit_time) + ", imposing delay of %s" % exception_delay)
+                time.sleep(exception_delay)
                 delayed_10s=True
                 
-                continue 
+                continue
+            
+            except Exception, e :
+                hit_time= datetime.datetime.now()
+                log("warning, exception [ " + str(e) +" ]when creating cs at " + str(hit_time) + ", imposing delay of %s" % exception_delay)
+                debug(traceback.format_exc())
+                time.sleep(exception_delay)
+                delayed_10s=True
+                
+                continue
     
             status     = {
                 'date_start': date_start,
@@ -472,26 +709,49 @@ class TestRackspaceCloudServerPerformance:
         debug("%d cloud servers deleted" % self.mycservers.get_count())
 
     def check_single_cs_rc_build(self, cs_record, cs_index):
-        return True
-    
         _server=cs_record['cs']
         _status=cs_record['status']
-        _date_start=_status['date_start']
+        _rc_status=cs_record['rackconnect']
         
-        #debug( "checking rc status of cs index " + str(cs_index) + "->" + server.name + " " +  str(checking_now) + "\n" + pformat(vars(server)))
-        pass
-    
-    def evaluate_rackconnect_status(self):
-        log('thread %s started' %  threading.current_thread().getName() )
-#        time.sleep(60)
-#        time.sleep(5)
+        _rc_status['is_build']=True
+        _rc_status['date_end']=None
+        
+        is_build=False
+ 
+        try:
+            checking_now= datetime.datetime.now()
+            status=self.rc_manager.check_server(_server)
+            debug( "checking rc status of cs index " + str(cs_index) + "->" + _server.name + " " +  str(checking_now) + "\n" + pformat(vars(_server)))
 
-        rc=RackConnect()
-        return
+        except Exception, e: 
+                debug("exception when checking rc status, server name " + _server.name + " / id " + str(_server.id) + " / time " + str(checking_now)  + " continue checking" )
+                debug(traceback.format_exc())
+                return is_build
+
+        if True == status:
+            is_build=True
+            _rc_status['is_build']=is_build
+            _rc_status['date_end']=checking_now
+
+        return is_build
+    
+    def evaluate_rackconnect_status(self, test_nr):
+        log('thread %s started' %  threading.current_thread().getName() )
+        #time.sleep(120)
+        time.sleep(7)
+
+        try:
+            self.rc_manager=RackConnect( *self.rcbastion.split('@') )
+            self.rc_manager.start()
+        except :
+            log('ERROR, please check provided password and ip for the bastion server')
+            raise
 
         is_build=False
         is_timeout=False
         delta=datetime.timedelta(minutes=self.timeout)
+        
+        debug("delta for rc is " + str(delta))
         
         while not is_build and not is_timeout :
             for i, s in self.mycservers.get_all_built_servers():
@@ -507,17 +767,22 @@ class TestRackspaceCloudServerPerformance:
             rc_max_time=cs_build_max_time + delta
             
             now=datetime.datetime.now()
+
+            debug("now is %s and rc_max_time for rc is %s" % (now, str(rc_max_time)) )
             
             if now > rc_max_time:
                 is_timeout=True
+                log('rackconnect evaluation is running too long, timeout has been reached')
                 
                 for cs_nr, cs_record in self.mycservers.get_all_failed_rc_servers():
                     rc_status=cs_record['rackconnect']
                     rc_status['date_end']=now
-                    self.log_status3(cs_record, sample_nr, cs_nr)
+                    self.log_status3(cs_record, test_nr, cs_nr)
                 break
             
             time.sleep(60)
+        
+        self.rc_manager.close()
         
         debug("rackconnect checked %d cloud servers" % self.mycservers.get_count())
                     
@@ -533,7 +798,7 @@ class TestRackspaceCloudServerPerformance:
             t=threading.Thread( target=self.evaluate_test, name="eval_test", args=(i+1,))
             t.start()
             
-            t=threading.Thread( target=self.evaluate_rackconnect_status(), name="eval_rackconnect", args=(i+1,))
+            t=threading.Thread( target=self.evaluate_rackconnect_status, name="eval_rackconnect", args=(i+1,))
             t.start()
             
             main_thread = threading.currentThread()
@@ -546,7 +811,19 @@ class TestRackspaceCloudServerPerformance:
             self.finish_test()
             log("[ ][ ] test nr %d finished at %s" % (i+1, datetime.datetime.now() ) )
             
+            self.generate_report(i+1)
 
+    def generate_report(self, test_nr):
+        self.mycservers
+        
+        debug("report %d start", test_nr)
+        
+        debug(pformat(vars(self.mycservers)))
+        
+
+    def set_bastion(self, rcbastion):
+        self.rcbastion = rcbastion
+    
 class Main:
     
     def usage(self, message=None):
@@ -554,14 +831,15 @@ class Main:
             print message
         
         print """
-    usage: %s [-v] [-h] [ -t # ] [ -s # ] [ -i # ] -u user -k key run | help
+    usage: %s [-v] [-h] [ -t # ] [ -s # ] [ -i # ] -b password@IP -u user -k key run | help
       -h - usage help 
       -v - verbose/debug output
       -u 
       -k
-      -i - ignore timeout (wait forever otherwise wait only 10 min and abandon the function ) 
+      -i - wait # minutes for the cloud server to be created  
       -t - how many repetitive tests to execute   
       -s - a test sample size; how many cloud servers to create in a single test run
+      -b - public IP of an existing bastion server and root password 
       
       args:
         help - displays info about this program
@@ -573,18 +851,19 @@ class Main:
         
 """ % (PROGRAM_NAME, PROGRAM_NAME)
     
-    def test_performance(self, user,key, sample, cs_count, timeout):
+    def test_performance(self, user,key, sample, cs_count, timeout, rcbastion):
         debug('func test_performance start')
         
         cloud_manager=FirstGenCloud(user, key)
         t=TestRackspaceCloudServerPerformance(cloud_manager, sample, cs_count, timeout )
+        t.set_bastion(rcbastion)
         t.test_multi_cs_perf()
     
     def run(self): 
         debug("main start")
         debug(sys.argv[0])
         
-        optlist, args = getopt.getopt(sys.argv[1:], 'vu:k:t:s:i:')
+        optlist, args = getopt.getopt(sys.argv[1:], 'vu:k:t:s:i:b:')
     
         user, key = None, None
         sample=1
@@ -608,6 +887,8 @@ class Main:
                 cs_count=int(val)
             elif o =="-i":
                 timeout=int(val)
+            elif o =="-b":
+                rcbastion=val
             else:
                 assert False, "unhandled option"
 
@@ -626,7 +907,7 @@ class Main:
             self.usage("missing argument")
             sys.exit()
         elif args[0] == "run" and user is not None and key is not None:
-            self.test_performance(user,key, sample, cs_count, timeout)
+            self.test_performance(user,key, sample, cs_count, timeout, rcbastion)
 
 if __name__ == '__main__': 
     Main().run()
