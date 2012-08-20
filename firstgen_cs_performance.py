@@ -128,7 +128,7 @@ class RackConnect:
             buff += resp
             debug(resp)
             
-        ret=re.search('(\d) done.', i).group(1)
+        ret=re.search('(\d) done.', buff).group(1)
         ssh.close()
         
         return ret==0 # successfully scp a file  
@@ -168,7 +168,7 @@ class RackConnect:
             buff += resp
             debug(resp)
             
-        ret=re.search( '(\w+)\n(\d) done.', i).group(1)
+        ret=re.search( '(\w+)\n(\d) done.', buff).group(1)
         ssh.close()
         
         return ret=='yes' # successfully scp a file  
@@ -816,7 +816,7 @@ class TestRackspaceCloudServerPerformance:
     def generate_report(self, test_nr):
         self.mycservers
         
-        debug("report %d start", test_nr)
+        debug("report %d start" % test_nr)
         
         debug(pformat(vars(self.mycservers)))
         
