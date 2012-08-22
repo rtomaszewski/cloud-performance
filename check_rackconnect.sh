@@ -1,6 +1,14 @@
 #!/bin/bash
 
-iptables=$(cat tmp)
+if [[ "$1" == 'debug' ]] ; then
+  set -x
+  ip a
+  ip r
+fi
+
+iptables=$(/sbin/iptables -nL)
+
+set +x
 ret=no
 
 if echo $iptables | grep -q 'Chain INPUT .policy DROP.'    ; then
@@ -13,4 +21,4 @@ if echo $iptables | grep -q 'Chain INPUT .policy DROP.'    ; then
   fi
 fi
 
-echo $ret
+echo "(is rackconnected=$ret)"
