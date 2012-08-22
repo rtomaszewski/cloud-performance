@@ -14,6 +14,7 @@ import Queue
 import thread
 import paramiko
 import traceback
+import copy 
 
 from cloudservers import CloudServers
 from cloudservers import exceptions
@@ -96,51 +97,87 @@ class RackConnect:
     def _scp_rc_test_script_cs(self, priv_ip, passw):
         if DEBUG: 
             scp_opt="-v"
+            
+        debug("trying scp a file from bastion %s to cloud server %s" % (self.rcbastion_ip, priv_ip ))
         
-        cmd='scp -q ' + scp_opt + ' -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no %s root@%s:~/; echo $? done.' % \
+        cmd='scp -q ' + scp_opt + ' -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no %s root@%s:~/; echo scp status $? done.' % \
              ( self.rc_test_script, priv_ip )
         
-        debug(cmd)
+        debug("[%s] cmd=%s" % ( priv_ip, cmd) )
         
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy( paramiko.AutoAddPolicy() )
         ssh.connect(self.rcbastion_ip, username='root', password=self.rcbastion_pass)
-        debug("trying scp a file from bastion %s to cloud server %s" % (self.rcbastion_ip, priv_ip ))
         
         chan = ssh.invoke_shell()
         
         # Ssh and wait for the password prompt.
         chan.send(cmd + '\n')
         buff = ''
-        while not buff.endswith('\'s password: '):
+        still_waiting_for_data=True
+        is_conn_lost=False
+        is_timeout=False
+        is_passwd=False
+        is_route=False
+        
+        while still_waiting_for_data :  
             resp = chan.recv(9999)
             buff += resp
-            debug(resp)
+            debug("[%s] %s" % (priv_ip, resp) )
             
-        # Send the password and wait for a prompt.
-        time.sleep(3)
-        debug("sending pass for scp: <%s> " % passw)
-        chan.send(passw + '\n')
-        
-        buff = ''
-        while buff.find(' done.') < 0 :
-            resp = chan.recv(9999)
-            buff += resp
-            debug(resp)
+            if buff.endswith('\'s password: ') :
+                is_passwd=True
+
+            elif buff.find('Connection timed out') > -1 :
+                is_timeout=True
+                
+            elif buff.find('lost connection') > -1 :
+                is_conn_lost=True
             
-        ret=re.search('(\d) done.', buff).group(1)
-        ssh.close()
+            elif buff.find('No route to host') > -1:
+                is_route=True
+            
+            still_waiting_for_data= not ( is_timeout or is_conn_lost or is_passwd or is_route )
+
+        debug( "[%s] is_timeout=%s, is_conn_lost=%s, is_passwd=%s is_route=%s" % \
+               ( priv_ip, is_timeout, is_conn_lost, is_passwd, is_route  ) )
         
-        return ret==0 # successfully scp a file  
-    
+        if is_passwd:              
+            # Send the password and wait for a prompt.
+            time.sleep(3)
+            debug("[%s] sending pass for scp: <%s> " % (priv_ip, passw) )
+            chan.send(passw + '\n')
+            
+            buff = ''
+            while buff.find(' done.') < 0 :
+                resp = chan.recv(9999)
+                buff += resp
+                debug("[%s] %s" % (priv_ip, resp) )
+                
+                if buff.find('Connection timed out') > -1 or buff.find('lost connection') > -1 :
+                    debug("[%s] scp aborted" % priv_ip )
+                    break
+                
+            ret=re.search('scp status (\d+) done.', buff).group(1)
+            ssh.close()
+            
+            debug("[%s] did scp execution succeeded: %s (%s)" % (priv_ip, str(ret=='0'), ret ) )
+            
+            return ret=='0' # successfully scp a file  
+        
+        return False
+        
     def _run_rc_test_script_on_cs(self, priv_ip, passw):
         if DEBUG: 
-            scp_opt="-v"
+            ssh_opt="-v"
+            cmd_opt="debug"
         
-        cmd='ssh -t ' + ssh_opt + ' -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no root@%s %s ; echo $? done.' % \
-             ( priv_ip, self.rc_test_script )
+        debug("trying to execute a command on bastion host %s for the cloud server %s" % (self.rcbastion_ip, priv_ip ))
         
-        debug(cmd)
+        cmd='ssh -t %s -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no root@%s bash %s %s; echo ssh status $? done.' % \
+             ( ssh_opt , priv_ip, self.rc_test_script, cmd_opt  )
+        
+        debug("[%s] cmd=%s" % ( priv_ip, cmd) )
         
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy( paramiko.AutoAddPolicy() )
@@ -152,26 +189,58 @@ class RackConnect:
         # Ssh and wait for the password prompt.
         chan.send(cmd + '\n')
         buff = ''
-        while not buff.endswith('\'s password: '):
+        still_waiting_for_data=True
+        is_conn_lost=False
+        is_timeout=False
+        is_passwd=False
+        is_route=False
+                
+        while still_waiting_for_data :  
             resp = chan.recv(9999)
             buff += resp
-            debug(resp)
+            debug("[%s] %s" % (priv_ip, resp) )
             
-        # Send the password and wait for a prompt.
-        time.sleep(3)
-        debug("sending pass for ssh: <%s> " % passw)
-        chan.send(passw + '\n')
-        
-        buff = ''
-        while buff.find(' done.') < 0 :
-            resp = chan.recv(9999)
-            buff += resp
-            debug(resp)
+            if buff.endswith('\'s password: ') :
+                is_passwd=True
+
+            elif buff.find('Connection timed out') > -1:
+                is_timeout=True
+                
+            elif buff.find('lost connection') > -1:
+                is_conn_lost=True
             
-        ret=re.search( '(\w+)\n(\d) done.', buff).group(1)
-        ssh.close()
-        
-        return ret=='yes' # successfully scp a file  
+            elif buff.find('No route to host') > -1:
+                is_route=True
+            
+            still_waiting_for_data= not ( is_timeout or is_conn_lost or is_passwd or is_route)
+
+        debug( "[%s] is_timeout=%s, is_conn_lost=%s, is_passwd=%s is_route=%s" % \
+               ( priv_ip, is_timeout, is_conn_lost, is_passwd, is_route ) )
+            
+        if is_passwd:
+            # Send the password and wait for a prompt.
+            time.sleep(3)
+            debug("[%s] sending pass for ssh: <%s> " % (priv_ip, passw) )
+            chan.send(passw + '\n')
+            
+            buff = ''
+            while buff.find(' done.') < 0 :
+                resp = chan.recv(9999)
+                buff += resp
+                debug("[%s] %s" % (priv_ip, resp) )
+                
+                if buff.find('Connection timed out') > -1 or buff.find('lost connection') > -1 or \
+                   buff.find('No route to host') > -1 :
+                    
+                    debug("[%s] ssh aborted" % priv_ip )
+                    break
+                
+            ret=re.search( '\(is rackconnected=(\w+)\)', buff).group(1)
+            ssh.close()
+            
+            debug("[%s] did ssh execution succeeded: %s" % (priv_ip, ret ) )
+            
+            return ret=='yes' # successfully scp a file  
     
     def exec_command(self, cmd, passwd=None):
         self.l_ssh_access.acquire()
@@ -220,7 +289,7 @@ class RackConnect:
         debug("doing initial testing if connection is alive")
         self._test()
 
-        log("[ ][ ] starting thread to keep the connection to bastion alive %s" % str(datetime.datetime.now()) )
+        debug("[ ][ ] starting thread to keep the connection to bastion alive %s" % str(datetime.datetime.now()) )
         self._keep_connection_alive_thread()
         
     def close(self):
@@ -230,13 +299,13 @@ class RackConnect:
         priv_ip=server.addresses['private'][0]
         passw=server.adminPass
         
-        if not priv_ip in self.test_servers:
-            if self._scp_rc_test_script_cs(priv_ip, passw):
+        if not (priv_ip in self.test_servers):
+            if not self._scp_rc_test_script_cs(priv_ip, passw):
                 log("ERROR, can't copy a file to cloud server %s" % priv_ip)
+                return False
             else:
                 self.test_servers.append(priv_ip)
-                return False
-
+        
         return self._run_rc_test_script_on_cs(priv_ip, passw)
         
 """
@@ -281,6 +350,12 @@ class CServers:
         
         self.l_build.release()
 
+    def get_all_records(self):
+        i=0
+        while i < len(self.cs_records) :
+            yield (i, rec)
+            i+=1
+    
     def is_create_complete(self):
         ret=False
         
@@ -339,7 +414,7 @@ class CServers:
         i=0
         while i < len(self.cs_records) :
             s=self.cs_records[i]
-            if not s['status']['is_build'] :
+            if not s['rackconnect']['is_build'] :
                 yield (i , s)
             i+=1
     
@@ -364,7 +439,7 @@ class CServers:
        i=0
        while i < len(self.cs_records) :
             s=self.cs_records[i]
-            if s['status']['is_build'] :
+            if s['status']['is_build'] and not s['rackconnect']['is_build']:
                 yield (i , s)
             i+=1
     
@@ -466,6 +541,14 @@ class TestRackspaceCloudServerPerformance:
         l_is_check_done=thread.allocate_lock()
         self.mycservers=None
         self.rc_manager = None
+        
+        self.report_file="cs_performance_report.txt"
+        
+        # in seconds
+        self.pooling_interval_rackconnect=20
+        self.pooling_interval_cs_build=30
+        
+        self.report_data=[]
 
     def check_cs_status(self, cs_record, cs_index): 
         _server=cs_record['cs']
@@ -478,7 +561,7 @@ class TestRackspaceCloudServerPerformance:
             checking_now= datetime.datetime.now()
             #server=self.cloud_manager.find( name=_server.name )
             server=self.cloud_manager.get( _server.id )
-            debug( "checking status of cs index " + str(cs_index) + "->" + server.name + " " +  str(checking_now) + "\n" + pformat(vars(server)))
+            debug( "checked status of cs index " + str(cs_index) + "->" + server.name + " " +  str(checking_now) + "\n" + pformat(vars(server)))
 
         except exceptions.NotFound:
                 debug("can't find server name " + _server.name + " / id " + str(_server.id) + " / time " + str(checking_now)  + " continue checking" )
@@ -506,6 +589,7 @@ class TestRackspaceCloudServerPerformance:
 #                    self.cs_delete(s['cs'])
             
             if self.mycservers.is_build_complete():
+                debug("done with building for all cs")
                 is_build=True
                 break
                 
@@ -520,7 +604,7 @@ class TestRackspaceCloudServerPerformance:
                 
                 break
             
-            time.sleep(60)
+            time.sleep(self.pooling_interval_cs_build)
         
         return is_build
     
@@ -713,22 +797,22 @@ class TestRackspaceCloudServerPerformance:
         _status=cs_record['status']
         _rc_status=cs_record['rackconnect']
         
-        _rc_status['is_build']=True
-        _rc_status['date_end']=None
+#        _rc_status['is_build']=True
+#        _rc_status['date_end']=None
         
         is_build=False
  
         try:
             checking_now= datetime.datetime.now()
-            status=self.rc_manager.check_server(_server)
             debug( "checking rc status of cs index " + str(cs_index) + "->" + _server.name + " " +  str(checking_now) + "\n" + pformat(vars(_server)))
+            status=self.rc_manager.check_server(_server)
 
         except Exception, e: 
                 debug("exception when checking rc status, server name " + _server.name + " / id " + str(_server.id) + " / time " + str(checking_now)  + " continue checking" )
                 debug(traceback.format_exc())
                 return is_build
 
-        if True == status:
+        if True == status: 
             is_build=True
             _rc_status['is_build']=is_build
             _rc_status['date_end']=checking_now
@@ -756,10 +840,11 @@ class TestRackspaceCloudServerPerformance:
         while not is_build and not is_timeout :
             for i, s in self.mycservers.get_all_built_servers():
                 if self.check_single_cs_rc_build(s, i):
-                    self.log_status3(s, sample_nr, i)
+                    self.log_status3(s, test_nr, i)
                     self.cs_delete(s['cs'])
 
             if self.mycservers.is_rc_build_complete():
+                debug("done with rc building for all cs")
                 is_build=True
                 break
 
@@ -778,9 +863,10 @@ class TestRackspaceCloudServerPerformance:
                     rc_status=cs_record['rackconnect']
                     rc_status['date_end']=now
                     self.log_status3(cs_record, test_nr, cs_nr)
+                    
                 break
             
-            time.sleep(60)
+            time.sleep(self.pooling_interval_rackconnect)
         
         self.rc_manager.close()
         
@@ -811,15 +897,65 @@ class TestRackspaceCloudServerPerformance:
             self.finish_test()
             log("[ ][ ] test nr %d finished at %s" % (i+1, datetime.datetime.now() ) )
             
-            self.generate_report(i+1)
+            self.save_reults(i)
+        
+        self.generate_report()
 
-    def generate_report(self, test_nr):
+    def save_reults(self, i):
+        self.report_data.append( copy.copy(self.mycservers.cs_records) )
+    
+    def generate_report(self):
         self.mycservers
+        debug(pformat(self.report_data))
         
-        debug("report %d start" % test_nr)
+        fname=self.report_file + str(int(time.time()))
+        f=open(f, 'w+')
         
-        debug(pformat(vars(self.mycservers)))
+        log("writing report for all tests to file %s" % fname)
+
+        header="cs # "
+        i=0
+        while i<len(self.report_data) :
+           header+=", test" + str(i)
+      
+        f.write("cloud building statistics\n")
+        f.write(header)
         
+        all_tests=len(self.report_data)
+        single_test=len(self.report_data[0])
+        
+        for cs_index in range(0, single_test):
+            s="%5d" % (cs_index)
+            
+            for test_nr in range(0, all_tests):
+                rec=self.report_data[test_nr][cs_index]
+                
+                cs = rec['cs']
+                status= rec['status']
+                rackconnect = rec['rackconnect']
+                
+                s=",%5d" % (status['delta'].total_seconds())
+            
+            f.write(s+'\n')
+        
+        f.write("\nrackconnect building statistics\n")
+        f.write(header)
+
+        for cs_index in range(0, single_test):
+            s="%5d" % (cs_index)
+            
+            for test_nr in range(0, all_tests):
+                rec=self.report_data[test_nr][cs_index]
+                
+                cs = rec['cs']
+                status= rec['status']
+                rackconnect = rec['rackconnect']
+                
+                s=",%5d" % (rackconnect['delta'].total_seconds())
+            
+            f.write(s+'\n')
+        
+        f.close()
 
     def set_bastion(self, rcbastion):
         self.rcbastion = rcbastion
@@ -912,20 +1048,3 @@ class Main:
 if __name__ == '__main__': 
     Main().run()
         
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
