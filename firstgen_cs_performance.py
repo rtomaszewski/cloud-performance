@@ -100,7 +100,7 @@ class RackConnect:
             
         debug("trying scp a file from bastion %s to cloud server %s" % (self.rcbastion_ip, priv_ip ))
         
-        cmd='scp -q ' + scp_opt + ' -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no %s root@%s:~/; echo scp status $? done.' % \
+        cmd='scp -q ' + scp_opt + ' -o UserKnownHostsFile=/dev/null -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no %s root@%s:~/; echo scp status $? done.' % \
              ( self.rc_test_script, priv_ip )
         
         debug("[%s] cmd=%s" % ( priv_ip, cmd) )
@@ -174,7 +174,7 @@ class RackConnect:
         
         debug("trying to execute a command on bastion host %s for the cloud server %s" % (self.rcbastion_ip, priv_ip ))
         
-        cmd='ssh -t %s -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no root@%s bash %s %s; echo ssh status $? done.' % \
+        cmd='ssh -t %s -o UserKnownHostsFile=/dev/null -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no root@%s bash %s %s; echo ssh status $? done.' % \
              ( ssh_opt , priv_ip, self.rc_test_script, cmd_opt  )
         
         debug("[%s] cmd=%s" % ( priv_ip, cmd) )
@@ -459,6 +459,13 @@ class CServers:
     def get_count(self):
         return self.current_cs_count
 
+    def set_times(self, start, end):
+        self.start = start
+        self.end = end
+    
+    def get_times(self):
+        return (self.start, self.end)
+
 class FirstGenCloud:
     l_cloud=thread.allocate_lock()
     
@@ -542,13 +549,14 @@ class TestRackspaceCloudServerPerformance:
         self.mycservers=None
         self.rc_manager = None
         
-        self.report_file="cs_performance_report.txt"
+        self.report_file="firstgen_rc_performance_report"
         
         # in seconds
         self.pooling_interval_rackconnect=20
         self.pooling_interval_cs_build=30
         
         self.report_data=[]
+        self.report_data_times=[]
 
     def check_cs_status(self, cs_record, cs_index): 
         _server=cs_record['cs']
@@ -877,7 +885,8 @@ class TestRackspaceCloudServerPerformance:
         log("[ ][ ] Preparing to start all %d tests" % (self.sample) )
         
         for i in range(0, self.sample):
-            log("[ ][ ] test nr %d started at %s" % (i+1, datetime.datetime.now() ) )
+            tstart=datetime.datetime.now()
+            log("[ ][ ] test nr %d started at %s" % (i+1, tstart ) )
             t=threading.Thread( target=self.start_test, name="start_test", args=(i+1,))
             t.start()
             
@@ -895,37 +904,53 @@ class TestRackspaceCloudServerPerformance:
             
             debug("all threads finished, destroying remaining servers")
             self.finish_test()
-            log("[ ][ ] test nr %d finished at %s" % (i+1, datetime.datetime.now() ) )
+            tend=datetime.datetime.now()
+            log("[ ][ ] test nr %d finished at %s" % (i+1, tend ) )
             
+            self.mycservers.set_times(tstart,tend)
             self.save_reults(i)
         
         self.generate_report()
 
     def save_reults(self, i):
         self.report_data.append( copy.copy(self.mycservers.cs_records) )
+        self.report_data_times.append( self.mycservers.get_times() )
     
     def generate_report(self):
-        self.mycservers
         debug(pformat(self.report_data))
         
-        fname=self.report_file + str(int(time.time()))
-        f=open(f, 'w+')
+        #fname=self.report_file
+        fname=self.report_file + "." + str(int(time.time())) + ".txt"
+        f=open(fname, 'w+')
         
-        log("writing report for all tests to file %s" % fname)
-
-        header="cs # "
+        log("writing report for all tests to a file %s" % fname)
+        
+        f.write("Overall tests duration and statistics\n")
+        
+        header="%6s, %30s, %30s, %s" % ( 'test #', 'start','end', 'duration [s]' )
+        f.write(header +"\n")
+        
+        for i in range(0, len(self.report_data_times)):
+            start,end=self.report_data_times[i]
+            d=end-start
+            s="%6d, %30s, %30s, %d" % (i+1, str(start), str(end), d.total_seconds())
+            f.write(s+"\n")
+        
+        f.write("\ncloud building statistics\n")
+        
+        header="%5s" % "cs #"
         i=0
         while i<len(self.report_data) :
-           header+=", test" + str(i)
+           header+= ", %7s"% ("test" + str(i+1))
+           i+=1
       
-        f.write("cloud building statistics\n")
-        f.write(header)
+        f.write(header+'\n')
         
         all_tests=len(self.report_data)
         single_test=len(self.report_data[0])
         
         for cs_index in range(0, single_test):
-            s="%5d" % (cs_index)
+            s="%5d" % (cs_index+1)
             
             for test_nr in range(0, all_tests):
                 rec=self.report_data[test_nr][cs_index]
@@ -934,15 +959,15 @@ class TestRackspaceCloudServerPerformance:
                 status= rec['status']
                 rackconnect = rec['rackconnect']
                 
-                s=",%5d" % (status['delta'].total_seconds())
+                s+=", %7d" % (status['delta'].total_seconds())
             
             f.write(s+'\n')
         
         f.write("\nrackconnect building statistics\n")
-        f.write(header)
-
+        f.write(header+'\n')
+    
         for cs_index in range(0, single_test):
-            s="%5d" % (cs_index)
+            s="%5d" % (cs_index+1)
             
             for test_nr in range(0, all_tests):
                 rec=self.report_data[test_nr][cs_index]
@@ -951,7 +976,7 @@ class TestRackspaceCloudServerPerformance:
                 status= rec['status']
                 rackconnect = rec['rackconnect']
                 
-                s=",%5d" % (rackconnect['delta'].total_seconds())
+                s+=", %7d" % (rackconnect['delta'].total_seconds())
             
             f.write(s+'\n')
         
