@@ -26,7 +26,7 @@ L_LOCK = thread.allocate_lock()
 
 def log(message):
     L_LOCK.acquire()
-    print message 
+    print("%s\n" % message) 
     L_LOCK.release()
 
 def debug(message):
@@ -287,7 +287,7 @@ class RackConnect:
         
         id=int(stdout[0].strip())
         if 0 != id:
-            log("rc test failed, id=%d" % id)
+            log("ERROR, rc test failed, id=%d" % id)
             raise RcConnectionTestException('connection test failed')
         
         return True
@@ -652,7 +652,7 @@ class TestRackspaceCloudServerPerformance:
             rc_status['timeout'] = rc_status['delta'].total_seconds()
             tmp =rc_status['timeout']  
             
-            s=s+"ERROR, couldn't find server or timeout after " + \
+            s+="ERROR, couldn't find server or timeout after " + \
               str(tmp) + ' seconds / ' + \
               str(tmp/60.0) + ' minutes'
             
@@ -943,6 +943,7 @@ class TestRackspaceCloudServerPerformance:
             self.finish_test()
             tend=datetime.datetime.now()
             log("[ ][ ] test nr %d finished at %s" % (i+1, tend ) )
+            log("")
             
             self.mycservers.set_times(tstart,tend)
             self.save_reults(i)
