@@ -234,13 +234,20 @@ class RackConnect:
                     
                     debug("[%s] ssh aborted" % priv_ip )
                     break
+
+            try:                
+                timestemp, ret=re.search( '\((\d+) is rackconnected=(\w+)\)', buff).groups()
+            except Exception, e: 
+                debug("exception when parsing rc check script output")
+                debug(traceback.format_exc())
+                timestemp=0 #this is wrong likely, should be some date
+                ret="no"
                 
-            ret=re.search( '\(is rackconnected=(\w+)\)', buff).group(1)
             ssh.close()
             
-            debug("[%s] did ssh execution succeeded: %s" % (priv_ip, ret ) )
+            debug("[%s] did ssh execution succeeded: %s (timestemp=%s)" % (priv_ip, ret, timestemp ) )
             
-            return ret=='yes' # successfully scp a file  
+            return (ret=='yes', timestemp) # successfully ssh 
     
     def exec_command(self, cmd, passwd=None):
         self.l_ssh_access.acquire()
@@ -622,18 +629,32 @@ class TestRackspaceCloudServerPerformance:
         rc_status=cs_record['rackconnect']
         
         s="[%2d][%2d] rackconnect build [" % (sample, cs_count+1 )+ server.name + '] '
-
-        rc_status['delta'] = rc_status['date_end'] - status['date_end']
-        rc_status['timeout'] = rc_status['delta'].total_seconds()
         
         if rc_status['is_build']:
-            s=s+"finished in " + str(rc_status['delta'].total_seconds()) + ' seconds / ' + \
-              str(rc_status['timeout']/60.0) + ' minutes'
+            rc_status['timestamp_delta'] = int(rc_status['remote_timestamp_finish']) - int(rc_status['remote_timestamp_start'])
+            delta = datetime.timedelta( seconds=rc_status['timestamp_delta'] )
+            
+            delay= rc_status['date_start'] - status['date_end']
+            
+            rc_status['rc_build_time'] = rc_status['date_start'] + delta
+            
+            rc_status['delta'] = (delay + delta)
+            rc_status['timeout'] = rc_status['delta'].total_seconds()
+            tmp =int(rc_status['timeout']) + 1  
+            
+            s+="finished in " + str(tmp) + '[s] / ' + \
+              str(round(tmp/60.0,2)) + '[min]'
         
         else:
+            delay= rc_status['date_end'] - status['date_end']
+            
+            rc_status['delta'] = delay
+            rc_status['timeout'] = rc_status['delta'].total_seconds()
+            tmp =rc_status['timeout']  
+            
             s=s+"ERROR, couldn't find server or timeout after " + \
-              str(rc_status['timeout']) + ' seconds / ' + \
-              str(rc_status['timeout']/60.0) + ' minutes'
+              str(tmp) + ' seconds / ' + \
+              str(tmp/60.0) + ' minutes'
             
         log(s)
     
@@ -805,25 +826,41 @@ class TestRackspaceCloudServerPerformance:
         _status=cs_record['status']
         _rc_status=cs_record['rackconnect']
         
-#        _rc_status['is_build']=True
-#        _rc_status['date_end']=None
-        
         is_build=False
  
         try:
-            checking_now= datetime.datetime.now()
-            debug( "checking rc status of cs index " + str(cs_index) + "->" + _server.name + " " +  str(checking_now) + "\n" + pformat(vars(_server)))
-            status=self.rc_manager.check_server(_server)
+            local_checking_start= datetime.datetime.now()
+            debug( "checking rc status of cs index " + str(cs_index) + "->" + _server.name + " " +  str(local_checking_start) + "\n" + pformat(vars(_server)))
+            
+            status, checking_now=self.rc_manager.check_server(_server)
+            
+            local_checking_end= datetime.datetime.now()
+            debug( "checked rc status " +  _server.name + " " +  str(local_checking_end) + "\n")
 
         except Exception, e: 
-                debug("exception when checking rc status, server name " + _server.name + " / id " + str(_server.id) + " / time " + str(checking_now)  + " continue checking" )
+                debug("exception when checking rc status, server name " + _server.name + " / id " + str(_server.id) + " / time " + str(local_checking_start)  + " continue checking" )
                 debug(traceback.format_exc())
                 return is_build
 
         if True == status: 
             is_build=True
             _rc_status['is_build']=is_build
-            _rc_status['date_end']=checking_now
+            _rc_status['date_end']=local_checking_end
+            
+            _rc_status['remote_timestamp_finish']=checking_now
+            
+            if not ('remote_timestamp_start' in _rc_status) :
+                _rc_status['remote_timestamp_start']=checking_now 
+        
+            if not ('date_start' in _rc_status) :
+                _rc_status['date_start']=local_checking_end
+            
+        else:
+            if not ('date_start' in _rc_status) :
+                _rc_status['date_start']=local_checking_end
+                
+            if not ('remote_timestamp_start' in _rc_status) : 
+                _rc_status['remote_timestamp_start']=checking_now
 
         return is_build
     
@@ -959,7 +996,7 @@ class TestRackspaceCloudServerPerformance:
                 status= rec['status']
                 rackconnect = rec['rackconnect']
                 
-                s+=", %7d" % (status['delta'].total_seconds())
+                s+=", %7d" % (status['delta'].total_seconds()+1)
             
             f.write(s+'\n')
         
@@ -976,7 +1013,7 @@ class TestRackspaceCloudServerPerformance:
                 status= rec['status']
                 rackconnect = rec['rackconnect']
                 
-                s+=", %7d" % (rackconnect['delta'].total_seconds())
+                s+=", %7d" % (rackconnect['delta'].total_seconds()+1)
             
             f.write(s+'\n')
         
