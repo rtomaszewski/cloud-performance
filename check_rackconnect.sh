@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#set -v -x 
+set -v -x 
 
 delay=7
 result="/tmp/rc.log"
@@ -17,7 +17,9 @@ else
 fi
 
 function ip_route {
-  if [ $1 = 'debug' ] ; then
+  arg=${1:-no}
+
+  if [ $arg = 'debug' ] ; then
     set -x
     /sbin/ip a 1>&2
     /sbin/ip r 1>&2
@@ -26,7 +28,9 @@ function ip_route {
 }
 
 function rc_check {
-  if [ $1 = 'debug' ] ; then
+  arg=${1:-no}
+
+  if [ $arg = 'debug' ] ; then
     set -x
     #echo rrr
   fi
@@ -73,7 +77,8 @@ function background_task {
   
   if [ $background = 'no' ]; then
     sleep 1
-    nohup $0 $debug background yes &
+    nohup "./$0" $debug background yes &
+    sleep 1
   fi
   
   run_and_log
