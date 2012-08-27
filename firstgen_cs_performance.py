@@ -26,7 +26,7 @@ L_LOCK = thread.allocate_lock()
 
 def log(message):
     L_LOCK.acquire()
-    print("%s\n" % message) 
+    print("%s" % message) 
     L_LOCK.release()
 
 def debug(message):
@@ -110,7 +110,14 @@ class RackConnect:
         ssh.connect(self.rcbastion_ip, username='root', password=self.rcbastion_pass)
         
         chan = ssh.invoke_shell()
+        chan.settimeout(30)
         
+        buff = ''
+        while not buff.endswith(':~# '):
+            resp = chan.recv(9999)
+            buff += resp
+            debug("[%s] %s" % (priv_ip, resp) )
+         
         # Ssh and wait for the password prompt.
         chan.send(cmd + '\n')
         buff = ''
@@ -185,6 +192,13 @@ class RackConnect:
         debug("running rc test script from bastion %s to the cloud server %s" % (self.rcbastion_ip, priv_ip ))
         
         chan = ssh.invoke_shell()
+        chan.settimeout(30)
+        
+        buff = ''
+        while not buff.endswith(':~# '):
+            resp = chan.recv(9999)
+            buff += resp
+            debug("[%s] %s" % (priv_ip, resp) )
         
         # Ssh and wait for the password prompt.
         chan.send(cmd + '\n')
