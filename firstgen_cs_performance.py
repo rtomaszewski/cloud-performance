@@ -126,6 +126,7 @@ class RackConnect:
         is_timeout=False
         is_passwd=False
         is_route=False
+        is_script_missing=False
         
         while still_waiting_for_data :  
             resp = chan.recv(9999)
@@ -144,10 +145,14 @@ class RackConnect:
             elif buff.find('No route to host') > -1:
                 is_route=True
             
-            still_waiting_for_data= not ( is_timeout or is_conn_lost or is_passwd or is_route )
+            elif buff.find('check_rackconnect.sh: No such file or directory') > -1:
+                is_script_missing=True
+            
+            
+            still_waiting_for_data= not ( is_timeout or is_conn_lost or is_passwd or is_route or is_script_missing )
 
-        debug( "[%s] is_timeout=%s, is_conn_lost=%s, is_passwd=%s is_route=%s" % \
-               ( priv_ip, is_timeout, is_conn_lost, is_passwd, is_route  ) )
+        debug( "[%s] is_timeout=%s, is_conn_lost=%s, is_passwd=%s is_route=%s is_script_missing=%s" % \
+               ( priv_ip, is_timeout, is_conn_lost, is_passwd, is_route, is_script_missing  ) )
         
         if is_passwd:              
             # Send the password and wait for a prompt.
@@ -170,7 +175,11 @@ class RackConnect:
             
             debug("[%s] did scp execution succeeded: %s (%s)" % (priv_ip, str(ret=='0'), ret ) )
             
-            return ret=='0' # successfully scp a file  
+            return ret=='0' # successfully scp a file
+        
+        if is_script_missing :
+            log("ERROR, the script is missing on the bastion host")
+            sys.exit(-1)
         
         return False
         
